@@ -257,6 +257,62 @@ window.ERA_SKUS = [
 // DOM id suffix for a SKU: 'ERA0002.1' -> '0002' (unique across the catalog).
 function eraSuffix(sku) { return String(sku || '').toUpperCase().replace(/^ERA/, '').split('.')[0]; }
 window.eraSuffix = eraSuffix;
+
+// eraclea 2026-10-29 — Brand Stewardship "Amazon Fees" KPI (was a
+// hardcoded $613.86 carried over from the template). Sums the orders
+// sheet's "Amazon Estimated fees" column for every eraclea order dated in
+// the given month, excluding cancelled orders (no fee is charged). The
+// orders sheet is a rolling window, so a month with no order rows at all
+// returns null (shown as "—"), never a misleading $0. Dates on this sheet
+// come in both "YYYY-MM-DD" and "M/D/YYYY".
+window.eraAmazonFeesForMonth = (function () {
+  let csvPromise = null;
+  function parseCsv(text) {
+    const rows = []; let row = [], cur = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+      else if (c === '"') q = true;
+      else if (c === ',') { row.push(cur); cur = ''; }
+      else if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+      else if (c !== '\r') cur += c;
+    }
+    if (cur || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+  function ym(d) {
+    const s = String(d || '').trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})/); if (m) return { y: +m[1], m: +m[2] };
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if (m) return { y: m[3].length === 2 ? 2000 + +m[3] : +m[3], m: +m[1] };
+    return null;
+  }
+  return async function (year, month) {
+    const cfg = (window.SHEET_CFG || {}).SHEET_ORDERS || {};
+    if (!csvPromise) {
+      csvPromise = fetch(`https://docs.google.com/spreadsheets/d/${cfg.fileId}/export?format=csv&gid=${cfg.gid}&_cb=${Date.now()}`)
+        .then(r => r.ok ? r.text() : '').catch(() => '');
+    }
+    const text = await csvPromise;
+    if (!text || text.trim().startsWith('<')) return null;
+    const rows = parseCsv(text);
+    const h = (rows[0] || []).map(x => x.trim().toLowerCase());
+    const iDate = h.indexOf('date'), iStatus = h.indexOf('status'), iBrand = h.indexOf('brand'), iSku = h.indexOf('sku');
+    const iFee = h.findIndex(x => x.includes('estimated fee'));
+    if (iDate < 0 || iFee < 0) { console.warn('[eraclea][fees] orders sheet has no date / "Amazon Estimated fees" column'); return null; }
+    let total = 0, n = 0;
+    rows.slice(1).forEach(r => {
+      const brand = (r[iBrand] || '').toLowerCase().trim();
+      const sku = (r[iSku] || '').toUpperCase().trim();
+      if (brand && brand !== 'eraclea' && !sku.startsWith('ERA')) return;
+      const d = ym(r[iDate]);
+      if (!d || d.y !== year || d.m !== month) return;
+      n++;
+      if ((r[iStatus] || '').toLowerCase().trim() === 'cancelled') return;
+      total += parseFloat(String(r[iFee] || '').replace(/[^0-9.\-]/g, '')) || 0;
+    });
+    return n ? Math.round(total * 100) / 100 : null;
+  };
+})();
 window.ERA_SKUS_BY_CAT = window.ERA_CATEGORIES.reduce((m, c) => { m[c.key] = window.ERA_SKUS.filter(p => p.cat === c.key); return m; }, {});
 </script>
 <!-- This key is the shared Medaltus Clerk account's real publishable key, used
@@ -277,7 +333,6 @@ window.ERA_SKUS_BY_CAT = window.ERA_CATEGORIES.reduce((m, c) => { m[c.key] = win
 @font-face { font-family:'GT Walsheim Pro Bold';   src:url('GT Walsheim Pro Bold.ttf') format('truetype');   font-weight:700; font-style:normal; }
 @font-face { font-family:'GT Walsheim Pro Medium'; src:url('GT Walsheim Pro Medium.ttf') format('truetype'); font-weight:500; font-style:normal; }
 @font-face { font-family:'GT Walsheim Pro Light';  src:url('GT Walsheim Pro Light.ttf') format('truetype');  font-weight:300; font-style:normal; }
-@font-face { font-family:'Plantin MT Pro Italic';  src:url('Monotype - PlantinMTPro-Italic.otf') format('opentype'); font-style:italic; }
 
 :root {
   --navy:#001F60; --slate:#6B7BA2; --green:#24E9A3; --sand:#F4DFD0; --silver:#CCD3D5;
@@ -289,7 +344,7 @@ window.ERA_SKUS_BY_CAT = window.ERA_CATEGORIES.reduce((m, c) => { m[c.key] = win
   --font:'GT Walsheim Pro Light','DM Sans',system-ui,sans-serif; --mono:'DM Mono','Fira Mono',monospace;
   --font-header:'GT Walsheim Pro Medium','DM Sans',system-ui,sans-serif;
   --font-bold:'GT Walsheim Pro Bold','DM Sans',system-ui,sans-serif;
-  --font-subheader:'Plantin MT Pro Italic',Georgia,'Times New Roman',serif;
+  --font-subheader:Georgia,'Times New Roman',serif; /* eraclea: all serif type is Georgia per Jaclyn 2026-10-29 (was Plantin MT Pro Italic) */
   --font-body-light:'GT Walsheim Pro Light','DM Sans',system-ui,sans-serif;
   --radius:10px; --radius-sm:6px;
 }
@@ -488,7 +543,7 @@ nav > .nav-btn:not(.active):hover{color:#fff;}
 
 /* ── Home page (adapted from Cosmette's dashboard) ── */
 .home-hero{background:linear-gradient(135deg,var(--navy) 0%,#0d3494 100%);border-radius:var(--radius);padding:32px 36px;margin-bottom:20px;position:relative;}
-.home-hero-logo{height:126px;width:auto;margin-left:8px;display:block;}
+.home-hero-logo{height:126px;width:auto;margin-left:-72px;display:block;} /* eraclea: shifted 80px left per Jaclyn 2026-10-29 */
 .home-badges{position:absolute;top:28px;right:32px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 .home-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(36,233,163,0.16);border:1px solid rgba(36,233,163,0.35);color:var(--green);font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:5px 12px;border-radius:20px;}
 .home-badge svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;}
@@ -1451,7 +1506,7 @@ details.inci-toggle[open] summary::before{content:'▾ ';}
 <aside class="sidebar">
   <div class="sb-brand">
     <div class="sb-brand-logo" style="display:flex;align-items:center;gap:6px;">
-      <img src="eraclea-logo.svg" alt="eraclea" style="height:18px;width:auto;filter:brightness(0) invert(1);">
+      <img src="eraclea-logo.svg" alt="eraclea" style="height:32px;width:auto;filter:brightness(0) invert(1);">
       <span style="color:var(--green);">•</span>
       <img src="Medaltus_Typeface Logo_dark bground_RGB.png" alt="Medaltus" style="height:18px;width:auto;">
     </div>
@@ -2499,7 +2554,7 @@ details.inci-toggle[open] summary::before{content:'▾ ';}
       <div class="section-label">Key Performance Metrics</div>
       <div class="kpi-row">
         <div class="kpi-card" id="kpi-pct-revenue-invested"><div class="kpi-label">% Revenue Invested</div><div class="kpi-value">5%</div><div class="kpi-mom flat"></div></div>
-        <div class="kpi-card" id="kpi-amazon-fees"><div class="kpi-label">Amazon Fees</div><div class="kpi-value sm">$613.86</div><div class="kpi-mom flat"></div></div>
+        <div class="kpi-card" id="kpi-amazon-fees"><div class="kpi-label">Amazon Fees</div><div class="kpi-value sm">—</div><div class="kpi-mom flat"></div></div>
         <div class="kpi-card" id="kpi-pct-units-ads"><div class="kpi-label">% Units from Ads</div><div class="kpi-value">26%</div><div class="kpi-mom flat"></div></div>
         <div class="kpi-card" id="kpi-ad-clicks"><div class="kpi-label">Ad Clicks</div><div class="kpi-value">272</div><div class="kpi-mom flat">0% MOM</div></div>
         <div class="kpi-card" id="kpi-ad-impressions"><div class="kpi-label">Ad Impressions</div><div class="kpi-value">85K</div><div class="kpi-mom dn">▼ 38% MOM</div></div>
@@ -2845,7 +2900,7 @@ details.inci-toggle[open] summary::before{content:'▾ ';}
       <div class="section-label">Key Performance Metrics</div>
       <div class="kpi-row">
         <div class="kpi-card" id="mx-kpi-pct-revenue-invested"><div class="kpi-label">% Revenue Invested</div><div class="kpi-value">—</div><div class="kpi-mom flat"></div></div>
-        <div class="kpi-card" id="mx-kpi-amazon-fees"><div class="kpi-label">Amazon Fees</div><div class="kpi-value sm">$613.86</div><div class="kpi-mom flat"></div></div>
+        <div class="kpi-card" id="mx-kpi-amazon-fees"><div class="kpi-label">Amazon Fees</div><div class="kpi-value sm">—</div><div class="kpi-mom flat"></div></div>
         <div class="kpi-card" id="mx-kpi-pct-units-ads"><div class="kpi-label">% Units from Ads</div><div class="kpi-value">—</div><div class="kpi-mom flat"></div></div>
         <div class="kpi-card" id="mx-kpi-ad-clicks"><div class="kpi-label">Ad Clicks</div><div class="kpi-value">—</div><div class="kpi-mom flat"></div></div>
         <div class="kpi-card" id="mx-kpi-ad-impressions"><div class="kpi-label">Ad Impressions</div><div class="kpi-value">—</div><div class="kpi-mom flat"></div></div>
@@ -8947,9 +9002,16 @@ async function initSns() {
         ltdEl.textContent = '$' + Math.round(ltdTotal).toLocaleString();
       }
 
-      // Amazon Fees KPI intentionally left as-is — pending a Finances/Product Fees
-      // API sync (net-new backend job), same shape as AD_SUMMARY. Do not overwrite
-      // with a guess in the meantime.
+      // Amazon Fees — sum of the orders sheet's "Amazon Estimated fees" for
+      // the month (eraAmazonFeesForMonth, defined near the top of the page).
+      try {
+        const [feesCurr, feesPrev] = await Promise.all([
+          window.eraAmazonFeesForMonth(year, month),
+          window.eraAmazonFeesForMonth(prevYear, prevMonth),
+        ]);
+        setKpiVal('kpi-amazon-fees', feesCurr != null ? '$' + feesCurr.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—');
+        setKpiMom('kpi-amazon-fees', (feesCurr != null && feesPrev) ? pct(feesCurr, feesPrev) : null);
+      } catch (e) { console.warn('[eraclea] Amazon Fees KPI failed:', e.message); setKpiVal('kpi-amazon-fees', '—'); }
 
     } catch (err) {
       console.warn('[eraclea] initStewardshipLive failed, charts/KPIs remain at last rendered values:', err.message);
@@ -11778,9 +11840,16 @@ async function initSns() {
         ltdEl.textContent = '$' + Math.round(ltdTotal).toLocaleString();
       }
 
-      // Amazon Fees KPI intentionally left as-is — pending a Finances/Product Fees
-      // API sync (net-new backend job), same shape as AD_SUMMARY. Do not overwrite
-      // with a guess in the meantime.
+      // Amazon Fees — sum of the orders sheet's "Amazon Estimated fees" for
+      // the month (eraAmazonFeesForMonth, defined near the top of the page).
+      try {
+        const [feesCurr, feesPrev] = await Promise.all([
+          window.eraAmazonFeesForMonth(year, month),
+          window.eraAmazonFeesForMonth(prevYear, prevMonth),
+        ]);
+        setKpiVal('mx-kpi-amazon-fees', feesCurr != null ? '$' + feesCurr.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—');
+        setKpiMom('mx-kpi-amazon-fees', (feesCurr != null && feesPrev) ? pct(feesCurr, feesPrev) : null);
+      } catch (e) { console.warn('[eraclea] Amazon Fees KPI failed:', e.message); setKpiVal('mx-kpi-amazon-fees', '—'); }
 
     } catch (err) {
       console.warn('[eraclea] initStewardshipExternal failed, charts/KPIs remain at last rendered values:', err.message);
@@ -15109,11 +15178,15 @@ window.initSalesInsights = async function () {
     const monthAbbr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const labels = monthKeys.map(k => { const [y, m] = k.split('-'); return `${monthAbbr[parseInt(m, 10) - 1]} '${y.slice(2)}`; });
     const categories = [...new Set(Object.values(byMonth).flatMap(m => Object.keys(m)))];
-    const COLORS = ['#001f60', '#24e9a3', '#c87d2f', '#6b7ba2', '#db372d', '#7fb3d5', '#b58ad6', '#f4b183', '#2e8b57', '#ccd3d5', '#8d6e63'];
+    // eraclea brand palette — navy, green, slate, sand, silver, then their
+    // tints/shades for the extra categories (no off-brand red/purple).
+    const COLORS = ['#001F60', '#24E9A3', '#6B7BA2', '#E3B999', '#CCD3D5', '#1DB88A', '#4D6290', '#F4DFD0', '#A6B0C7', '#A7F6DA', '#99A5C0'];
     const datasets = categories.map((cat, i) => ({
-      label: cat,
+      label: cat.replace(/^ERA\s*•\s*/, ''), // 'ERA • Serums' -> 'Serums'
       data: monthKeys.map(k => byMonth[k][cat] || 0),
       backgroundColor: COLORS[i % COLORS.length],
+      borderColor: 'rgba(0,31,96,0.18)', // keeps the light sand/silver bars visible on white
+      borderWidth: 1,
     }));
 
     if (window._categorySalesChart) { window._categorySalesChart.destroy(); window._categorySalesChart = null; }

@@ -1363,7 +1363,7 @@ details.inci-toggle[open] summary::before{content:'▾ ';}
 .pdfx-tagright{text-align:right;}
 .pdfx-tagright .pdfx-hdr-tag{color:rgba(255,255,255,.55);}
 .pdfx-tagright .pdfx-hdr-month{color:#fff;font-size:15px;}
-.pdfx-tabs{display:flex;gap:22px;}
+.pdfx-tabs{display:flex;gap:18px;flex-wrap:nowrap;white-space:nowrap;}
 .pdfx-tab{font-size:12px;font-weight:600;color:rgba(255,255,255,.55);padding-bottom:12px;border-bottom:3px solid transparent;}
 .pdfx-tab.on{color:#fff;border-bottom-color:var(--green);}
 .pdfx-header-divider{height:1px;background:var(--border);margin:0 -46px 20px -46px;}
@@ -14930,7 +14930,16 @@ window.initBrandMomentum = async function () {
     let rankedKws = [];
     let kwFetchError = null;
     if (isCsv(kwPerKeywordCsv)) {
-      const rows = parseCsv(kwPerKeywordCsv).filter(r => (r.asin || '').trim());
+      // FIXED 2026-10-29 — the tracker keeps one row per keyword per weekly
+      // snapshot, so the same keyword was listed once per date (8x "eraclea
+      // facial cleanser") and the Ranked Keywords KPI was inflated. Keep only
+      // the latest dated row per ASIN + keyword.
+      const latestByKey = {};
+      parseCsv(kwPerKeywordCsv).filter(r => (r.asin || '').trim()).forEach(r => {
+        const k = (r.asin || '').trim().toUpperCase() + '|' + (r.keyword || '').trim().toLowerCase();
+        if (!latestByKey[k] || (r.date || '') >= (latestByKey[k].date || '')) latestByKey[k] = r;
+      });
+      const rows = Object.values(latestByKey);
       rankedKws = rows
         .filter(r => { const rank = parseInt(r.organic_rank, 10); return rank > 0 && rank <= 100; })
         .map(r => ({ kw: r.keyword || '', rank: parseInt(r.organic_rank, 10), vol: parseInt(r.search_volume, 10) || null, prod: ERA_MOMENTUM_PRODUCTS.find(p => p.asin === (r.asin || '').trim().toUpperCase())?.name || '' }))
@@ -22395,7 +22404,7 @@ async function loadAuditResultsFromSheet() {
       const PDFX_CHART_TARGET_HEIGHT_PX = {
         _amazonChart: 190,
         _walmartChart: 190,
-        _categorySalesChart: 170, // was 220; Insights page ran over 11in (2026-10-06)
+        _categorySalesChart: 265, // 2026-10-29: 170 -> 265 so the card matches the Subscriptions card height
         _snsChart: 110, // was 190; Insights page ran over 11in (2026-10-06)
         _investChart: 170,
         _impressChart: 150,
@@ -22633,7 +22642,10 @@ async function loadAuditResultsFromSheet() {
 
   function pdfxLogoHtml(style) {
     return PDFX_LOGO_SRC
-      ? '<img src="' + PDFX_LOGO_SRC + '" alt="eraclea" style="' + style + '">'
+      // margin-left:-85px (2026-10-29): pulls the logo 85px left on the cover
+      // and every page header. Applied to the image only, so the text
+      // fallback is never pushed off the page edge.
+      ? '<img src="' + PDFX_LOGO_SRC + '" alt="eraclea" style="margin-left:-85px;' + style + '">'
       : '<span style="font-family:Georgia,\'Times New Roman\',serif;font-weight:700;">eraclea</span>';
   }
 
@@ -22682,7 +22694,12 @@ async function loadAuditResultsFromSheet() {
   }
 
   function pdfxHeaderBand(monthYear, activeTab, customValue, customSubValue) {
-    const tabs = ['Sales', 'Fulfillment & Customer Service', 'Brand Stewardship', 'Opportunities', 'Events'];
+    // CHANGED 2026-10-29 — full menu order; only pages actually included
+    // in this export (per the PDF checkboxes) are listed. Falls back to the
+    // active tab alone if the inclusion map hasn't been set.
+    const PDFX_TAB_ORDER = ['Sales', 'Insights', 'Reviews', 'Brand Momentum', 'Fulfillment & Customer Service', 'Brand Stewardship', 'Opportunities', 'Events'];
+    const inc = window._pdfxIncludedTabs;
+    const tabs = PDFX_TAB_ORDER.filter(function (t) { return inc ? !!inc[t] : t === activeTab; });
     const tabsHtml = tabs.map(function (t) {
       return '<span class="pdfx-tab' + (t === activeTab ? ' on' : '') + '">' + t + '</span>';
     }).join('');
@@ -23076,7 +23093,7 @@ async function loadAuditResultsFromSheet() {
     return '' +
       '<div class="pdfx-page">' +
         '<div class="pdfx-inner" style="padding:22px 46px 0;">' + // tighter, like Opportunities (2026-10-06)
-          pdfxHeaderBand(monthYear, 'Sales') +
+          pdfxHeaderBand(monthYear, 'Insights') +
           '<div class="pdfx-chlabel">Insights</div>' +
           '<div class="pdfx-card" style="margin-top:6px;margin-bottom:14px;"><div class="pdfx-card-title">Unit Sales by Product Category</div>' + pdfxChartBlock('_categorySalesChart') + '</div>' +
           '<div class="pdfx-card" style="margin-bottom:14px;">' +
@@ -23094,7 +23111,7 @@ async function loadAuditResultsFromSheet() {
 
   function buildBrandMomentumPages(monthYear) {
     const cards = Array.from(document.querySelectorAll('#bm-momentum-cards-grid .momentum-pcard'));
-    const FIRST_PAGE_MAX = 4, OTHER_PAGE_MAX = 5;
+    const FIRST_PAGE_MAX = 4, OTHER_PAGE_MAX = 6; // 5 -> 6 (2026-10-29): last page was running too tall
     const productChunks = [];
     {
       const remaining = cards.slice();
@@ -23127,11 +23144,11 @@ async function loadAuditResultsFromSheet() {
     if (productChunks.length) {
       productPages = productChunks.map((chunk, i) => {
         const headHtml = i === 0
-          ? pdfxHeaderBand(monthYear, 'Sales') +
+          ? pdfxHeaderBand(monthYear, 'Brand Momentum') +
             '<div class="pdfx-chlabel">Brand Momentum</div>' +
             '<div class="pdfx-kpis n3" style="margin-top:6px;margin-bottom:14px;">' + top3Kpis.map(pdfxKpiCardHtml).join('') + '</div>' +
             '<div class="pdfx-card-title" style="margin-bottom:10px;">Performance by Product</div>'
-          : pdfxHeaderBand(monthYear, 'Sales') +
+          : pdfxHeaderBand(monthYear, 'Brand Momentum') +
             '<div class="pdfx-chlabel">Performance by Product <span style="font-weight:400;color:var(--muted);">(continued)</span></div>';
         // Keyword table + What We're Tracking Next go on the LAST product page
         // (CHANGED 2026-10-06 per Jaclyn: page 2 only had one product card).
@@ -23149,7 +23166,7 @@ async function loadAuditResultsFromSheet() {
     const lastPage = (!productChunks.length && (kwHtml || nextHtml)) ? (
       '<div class="pdfx-page">' +
         '<div class="pdfx-inner">' +
-          pdfxHeaderBand(monthYear, 'Sales') +
+          pdfxHeaderBand(monthYear, 'Brand Momentum') +
           kwHtml +
           (nextHtml ? '<div style="margin-top:' + (kwHtml ? '22px' : '0') + ';">' + nextHtml + '</div>' : '') +
         '</div>' +
@@ -23719,6 +23736,17 @@ html,body{height:auto!important;margin:0!important;padding:0!important;backgroun
         pd:   !!document.getElementById('pdf-include-pd')   && document.getElementById('pdf-include-pd').checked,
         pbdd: !!document.getElementById('pdf-include-pbdd') && document.getElementById('pdf-include-pbdd').checked,
         bfcm: !!document.getElementById('pdf-include-bfcm') && document.getElementById('pdf-include-bfcm').checked,
+      };
+      // ADDED 2026-10-29 — PDF header menu lists only the pages in this export.
+      window._pdfxIncludedTabs = {
+        'Sales': !!(includeSections.amazon || includeSections.walmart),
+        'Insights': !!includeSections.insights,
+        'Reviews': !!includeSections.reviews,
+        'Brand Momentum': !!includeSections.brandMomentum,
+        'Fulfillment & Customer Service': !!includeSections.fulfillment,
+        'Brand Stewardship': !!includeSections.stewardship,
+        'Opportunities': !!includeSections.opportunities,
+        'Events': !!(includeSections.strategy || includeSections.bss || includeSections.pd || includeSections.pbdd || includeSections.bfcm),
       };
 
       const initPromises = [

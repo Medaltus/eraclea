@@ -35,16 +35,19 @@
  *   fields is optional on action:'approve' (approving doesn't require new content).
  */
 
-const { ensureTab, readRows, replaceRows } = require('./config/_sheets_client');
-const sheets = require('./config/sheets');
+// SELF-CONTAINED (2026-10-29): the eraclea repo has no api/config/
+// folder, so the PB & Jay version's require('./config/_sheets_client') and
+// require('./config/sheets') crashed the function ("Cannot find module").
+// This file now talks to the Sheets API directly with googleapis (already in
+// package.json) and the same GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY env vars
+// as upload-insight-image.js. Nothing else to add to the repo.
+const { google } = require('googleapis');
 
 const BRAND_ID = 'eraclea';
 const MONTHLY_TAB = 'eraclea';
 const EVENTS_TAB = 'eraclea_events';
-// Report Insights workbook (shared by every brand). config/sheets.js's
-// reportInsights is used when present; this is the same file id.
-const REPORT_INSIGHTS_FILE_ID = '1Fz0bEArdx54vTSGMGj-m6TYec1kizKyPubJOZNWBaLg';
-const REPORT_INSIGHTS = sheets.reportInsights || REPORT_INSIGHTS_FILE_ID;
+// Report Insights workbook (shared by every brand).
+const REPORT_INSIGHTS = '1Fz0bEArdx54vTSGMGj-m6TYec1kizKyPubJOZNWBaLg';
 
 const MONTHLY_HEADERS = [
   'year', 'month', 'exec_summary_title',
@@ -137,7 +140,7 @@ module.exports = async function handler(req, res) {
 
 async function upsertRow({ tabName, headers, matchFields, fields, action, actor }) {
   const token = await ensureTab(REPORT_INSIGHTS, tabName, headers);
-  const existing = await readRows(REPORT_INSIGHTS, tabName);
+  const existing = await readRows(REPORT_INSIGHTS, tabName, token);
 
   const matchKeys = Object.keys(matchFields);
   const idx = existing.findIndex(r => matchKeys.every(k => String(r[k] || '') === matchFields[k]));
@@ -177,4 +180,67 @@ async function upsertRow({ tabName, headers, matchFields, fields, action, actor 
   const rowArrays = updatedRows.map(r => headers.map(h => r[h] ?? ''));
   await replaceRows(REPORT_INSIGHTS, tabName, headers, rowArrays, token);
   return row;
+}
+
+// ── Sheets API helpers (replace the old config/_sheets_client) ──────────
+function sheetsClient() {
+  if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    throw new Error('Server is missing GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY');
+  }
+  const auth = new google.auth.JWT(
+    process.env.GOOGLE_CLIENT_EMAIL,
+    null,
+    (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/spreadsheets']
+  );
+  return google.sheets({ version: 'v4', auth });
+}
+const q = tab => `'${String(tab).replace(/'/g, "''")}'`;
+
+// Creates the tab with a header row if it doesn't exist. Returns the client
+// (the "token" the old helper returned, passed back into replaceRows).
+async function ensureTab(spreadsheetId, tabName, headers) {
+  const api = sheetsClient();
+  const meta = await api.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties.title' });
+  const exists = (meta.data.sheets || []).some(sh => sh.properties.title === tabName);
+  if (!exists) {
+    await api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: tabName } } }] } });
+    await api.spreadsheets.values.update({
+      spreadsheetId, range: `${q(tabName)}!A1`, valueInputOption: 'RAW',
+      requestBody: { values: [headers] },
+    });
+  }
+  return api;
+}
+
+// Rows as objects keyed by the sheet's OWN header row (row 1).
+async function readRows(spreadsheetId, tabName, api) {
+  api = api || sheetsClient();
+  const res = await api.spreadsheets.values.get({ spreadsheetId, range: `${q(tabName)}!A1:ZZ`, valueRenderOption: 'FORMATTED_VALUE' });
+  const values = res.data.values || [];
+  if (!values.length) return [];
+  const hdr = values[0].map(h => String(h || '').trim());
+  return values.slice(1).map(v => { const o = {}; hdr.forEach((h, i) => { if (h) o[h] = v[i] == null ? '' : String(v[i]); }); return o; });
+}
+
+// Rewrites every data row. Values are placed by matching HEADER NAME, not
+// by position, so a column reorder in the sheet can never shift data into
+// the wrong column. Any expected header missing from the sheet is appended
+// to the END of row 1 (never inserted). Written RAW, so text is stored
+// exactly as typed (no formula / number / date conversion).
+async function replaceRows(spreadsheetId, tabName, headers, rowArrays, api) {
+  api = api || sheetsClient();
+  const hdrRes = await api.spreadsheets.values.get({ spreadsheetId, range: `${q(tabName)}!1:1` });
+  const sheetHdr = ((hdrRes.data.values || [])[0] || []).map(h => String(h || '').trim());
+  const missing = headers.filter(h => !sheetHdr.includes(h));
+  const finalHdr = sheetHdr.concat(missing);
+  if (missing.length) {
+    await api.spreadsheets.values.update({ spreadsheetId, range: `${q(tabName)}!A1`, valueInputOption: 'RAW', requestBody: { values: [finalHdr] } });
+  }
+  const objs = rowArrays.map(arr => { const o = {}; headers.forEach((h, i) => { o[h] = arr[i] == null ? '' : String(arr[i]); }); return o; });
+  const out = objs.map(o => finalHdr.map(h => (h && o[h] != null) ? o[h] : ''));
+  await api.spreadsheets.values.clear({ spreadsheetId, range: `${q(tabName)}!A2:ZZ` });
+  if (out.length) {
+    await api.spreadsheets.values.update({ spreadsheetId, range: `${q(tabName)}!A2`, valueInputOption: 'RAW', requestBody: { values: out } });
+  }
 }

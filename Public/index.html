@@ -2346,6 +2346,8 @@ details.inci-toggle[open] summary::before{content:'▾ ';}
         </div>
         <div id="ins-cat-wrap" style="position:relative;height:320px;"><canvas id="chart-category-sales"></canvas></div>
         <div id="ins-traffic-wrap" style="position:relative;height:320px;display:none;"><canvas id="chart-insights-traffic"></canvas></div>
+        <!-- Amazon events list (same as the Traffic page) — 2026-10-29 -->
+        <div class="trf-media" id="trf-ins-media" style="display:none;"></div>
       </div>
 
       <!-- Subscriptions — moved here 2026-09-30 per Jaclyn from Marketing >
@@ -23198,6 +23200,24 @@ async function loadAuditResultsFromSheet() {
   // Opportunities PDF page, now correctly relocated to match where it
   // actually lives on the live dashboard since Stage 2), and the
   // editable Key Insight text.
+  // Amazon events list under the Insights Traffic graph — read straight from
+  // the dashboard's own #trf-ins-media (same text, same order), restyled
+  // compact so the Insights page stays on one sheet. 2026-10-29.
+  function pdfxTrafficEventsHtml() {
+    const items = Array.from(document.querySelectorAll('#trf-ins-media .trf-media-item'));
+    if (!items.length) return '';
+    const rows = items.map(function (it) {
+      const sw = it.querySelector('.trf-ev-swatch');
+      const faded = sw && sw.style.opacity && Number(sw.style.opacity) < 1;
+      const txt = it.querySelector('span:last-child');
+      return '<div style="display:flex;gap:7px;align-items:flex-start;font-size:9.5px;line-height:1.4;color:var(--navy);">' +
+        '<span style="flex:0 0 14px;height:9px;border-radius:2px;margin-top:2px;background:#FF9900;' + (faded ? 'opacity:.45;' : '') + '"></span>' +
+        '<span>' + (txt ? txt.innerHTML : pdfxEscape(it.textContent)) + '</span></div>';
+    }).join('');
+    return '<div style="margin-top:8px;display:flex;flex-direction:column;gap:2px;">' +
+      '<div style="font-size:8.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px;">Amazon events</div>' + rows + '</div>';
+  }
+
   function buildSalesInsightsPage(monthYear) {
     const subsKpis = ['kpi-active-subs', 'kpi-retention'].map(pdfxKpi);
     const keyInsight = pdfxText('#catinsight-disp');
@@ -23209,7 +23229,7 @@ async function loadAuditResultsFromSheet() {
           '<div class="pdfx-chlabel">Insights</div>' +
           // 2026-10-29: exports whichever graph the Insights toggle is on.
           (window._insGraphMode === 'traffic'
-            ? '<div class="pdfx-card" style="margin-top:6px;margin-bottom:14px;"><div class="pdfx-card-title">' + pdfxEscape(pdfxText('#trf-ins-title') || 'Traffic') + '</div>' + pdfxChartBlock('_insTrafficChart') + '</div>'
+            ? '<div class="pdfx-card" style="margin-top:6px;margin-bottom:14px;"><div class="pdfx-card-title">' + pdfxEscape(pdfxText('#trf-ins-title') || 'Traffic') + '</div>' + pdfxChartBlock('_insTrafficChart') + pdfxTrafficEventsHtml() + '</div>'
             : '<div class="pdfx-card" style="margin-top:6px;margin-bottom:14px;"><div class="pdfx-card-title">Unit Sales by Product Category</div>' + pdfxChartBlock('_categorySalesChart') + '</div>') +
           '<div class="pdfx-card" style="margin-bottom:14px;">' +
             '<div class="pdfx-card-title">Subscriptions</div>' +
@@ -26104,12 +26124,12 @@ window.addEventListener('load', async () => {
       // Same lifecycle as _categorySalesChart: destroy + recreate on window.
       if (window._insTrafficChart) { window._insTrafficChart.destroy(); window._insTrafficChart = null; }
       window._insTrafficChart = new Chart(canvas, { type:'line', data:{ labels, datasets }, options:opts, plugins:[TRF_EVENT_PLUGIN] });
-      return;
+    } else {
+      const ch = _trf.charts[key];
+      if (ch) { ch.data.labels = labels; ch.data.datasets = datasets; ch.options = opts; ch.update(); }
+      else _trf.charts[key] = new Chart(canvas, { type:'line', data:{ labels, datasets }, options:opts, plugins:[TRF_EVENT_PLUGIN] });
+      renderLegend(_trf.charts[key], `trf-legend-${key}`);
     }
-    const ch = _trf.charts[key];
-    if (ch) { ch.data.labels = labels; ch.data.datasets = datasets; ch.options = opts; ch.update(); }
-    else _trf.charts[key] = new Chart(canvas, { type:'line', data:{ labels, datasets }, options:opts, plugins:[TRF_EVENT_PLUGIN] });
-    renderLegend(_trf.charts[key], `trf-legend-${key}`);
 
     const listEl = document.getElementById(`trf-${key}-media`);
     if (listEl) {
@@ -26140,6 +26160,8 @@ window.insSetGraph = function (mode) {
   if (trfWrap) trfWrap.style.display = isT ? '' : 'none';
   if (ctrls) ctrls.style.display = isT ? '' : 'none';
   if (note) note.style.display = isT ? '' : 'none';
+  const media = document.getElementById('trf-ins-media');
+  if (media) media.style.display = isT ? '' : 'none';
   if (isT) {
     if (title && !window._insTrafficChart) title.textContent = 'Traffic — eraclea All Products — Sessions';
     if (typeof window.loadInsightsTraffic === 'function') window.loadInsightsTraffic();

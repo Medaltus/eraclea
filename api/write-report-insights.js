@@ -19,13 +19,15 @@
  *   - Self-contained brand: does not depend on config/brands.js having an
  *     'eraclea' entry. The dashboard posts brand:'eraclea'; anything else
  *     is rejected.
- *   - Neither tab existed in the Report Insights workbook as of 2026-10-29,
- *     so ensureTab() creates both with the headers below on the first save.
- *   - MONTHLY_HEADERS = PB & Jay's exact A..BF order, then the
- *     Accomplished 3 & 4 image columns appended at the END (the eraclea
- *     dashboard reads accomplished{1-4}_image{1-6}; PB & Jay's sheet only
- *     has images for cards 1 & 2). Same rule as every brand: new columns
- *     are only ever appended at the end, never inserted.
+ *   - Tabs created by Jaclyn 2026-10-29: 'eraclea' (gid 1479705375) and
+ *     'eraclea_events' (gid 810998273). Headers verified against the live
+ *     sheet the same day — MONTHLY_HEADERS below is the 'eraclea' tab's
+ *     exact A..BF order (58 columns, identical to PB & Jay's).
+ *     replaceRows() writes POSITIONALLY, so this array must match the
+ *     sheet column-for-column. New columns only ever get appended at the
+ *     END of both the sheet and this array — never inserted.
+ *   - Images exist for Accomplished cards 1 & 2 only (the eraclea
+ *     dashboard only saves image fields for those two cards).
  *
  * POST body:
  *   Monthly: { brand:'eraclea', scope:'monthly', year, month, fields:{...}, action:'save'|'approve' }
@@ -64,12 +66,7 @@ const MONTHLY_HEADERS = [
   'opp6_subtitle', 'opp6_body', 'accomplished1_image4',
   'accomplished1_image5', 'accomplished1_image6', 'accomplished2_image3',
   'accomplished2_image4', 'accomplished2_image5', 'accomplished2_image6',
-  'subscriptions_key_insight',                                   // BF
-  // eraclea additions (appended — never insert above this line)
-  'accomplished3_image1', 'accomplished3_image2', 'accomplished3_image3',
-  'accomplished3_image4', 'accomplished3_image5', 'accomplished3_image6',
-  'accomplished4_image1', 'accomplished4_image2', 'accomplished4_image3',
-  'accomplished4_image4', 'accomplished4_image5', 'accomplished4_image6',
+  'subscriptions_key_insight', // column BF
 ];
 
 // acc{n}_* (older dashboards) -> accomplished{n}_* (this sheet's real columns).

@@ -19,8 +19,17 @@
 //                                                 nothing left over from before)
 //   getSheetsToken()                           -> OAuth access token string
 //
-// All writes are RAW (stored exactly as given — no formula/date/number
-// conversion).
+// Header rows and ensureTab are written RAW. Data rows (appendRows /
+// replaceRows) are written USER_ENTERED — the same as typing them in — so
+// numbers, TRUE/FALSE and dates keep the cell types every other brand's rows
+// already have in the shared ppc_strategy tab. Mixing text "12" into a
+// numeric column would make Google's CSV export blank out the minority type
+// for EVERY brand's dashboard reading that tab.
+//
+// SAFETY (shared tabs): replaceRows refuses to run if it would shrink a tab
+// that has 10+ data rows to under half its size. ppc_strategy holds every
+// brand's rows (171 as of 2026-10-30); if the read of existing rows ever
+// failed, a blind replace would wipe the other brands.
 
 const { google } = require('googleapis');
 
@@ -81,18 +90,29 @@ async function ensureTab(sheetId, tabName, headers) {
 async function appendRows(sheetId, tabName, rows) {
   if (!rows || !rows.length) return;
   await api().spreadsheets.values.append({
-    spreadsheetId: sheetId, range: `${q(tabName)}!A1`, valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS',
+    spreadsheetId: sheetId, range: `${q(tabName)}!A1`, valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
     requestBody: { values: rows.map(r => r.map(c => (c == null ? '' : String(c)))) },
   });
 }
 
 async function replaceRows(sheetId, tabName, headers, rows) {
   const s = api();
+  rows = rows || [];
+  const cur = await s.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${q(tabName)}!A2:A` });
+  const existing = (cur.data.values || []).filter(v => String(v[0] || '').trim()).length;
+  if (existing >= 10 && rows.length < existing / 2) {
+    throw new Error(`replaceRows: refusing to shrink "${tabName}" from ${existing} to ${rows.length} rows — existing rows may not have been read`);
+  }
   await s.spreadsheets.values.clear({ spreadsheetId: sheetId, range: `${q(tabName)}!A1:ZZ` });
-  const values = [headers, ...(rows || []).map(r => r.map(c => (c == null ? '' : String(c))))];
   await s.spreadsheets.values.update({
-    spreadsheetId: sheetId, range: `${q(tabName)}!A1`, valueInputOption: 'RAW', requestBody: { values },
+    spreadsheetId: sheetId, range: `${q(tabName)}!A1`, valueInputOption: 'RAW', requestBody: { values: [headers] },
   });
+  if (rows.length) {
+    await s.spreadsheets.values.update({
+      spreadsheetId: sheetId, range: `${q(tabName)}!A2`, valueInputOption: 'USER_ENTERED',
+      requestBody: { values: rows.map(r => r.map(c => (c == null ? '' : String(c)))) },
+    });
+  }
 }
 
 module.exports = { readRows, ensureTab, appendRows, replaceRows, getSheetsToken };

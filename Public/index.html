@@ -7238,6 +7238,12 @@ async function initSns() {
         const r = x.row;
         const total = num(r.total_subscriptions ?? r.total_subs ?? r.subscriptions ?? r.active_subscriptions);
         if (total === null || total === 0) { skipped.push(x.y + '-' + x.m); return; }
+        // FIXED 2026-11-06: the Stewardship Summary already has a row for the
+        // current, unfinished month (Nov '26: 20, same as Oct), and the KPI
+        // compared that partial row against October — so Oct's 19 -> 20 gain
+        // showed as 0% MOM. Stop at the last complete month, same as the
+        // chart below does, so the KPI is Oct vs Sep.
+        { const _n = new Date(); if (!isNaN(x.y) && !isNaN(x.m) && (x.y > _n.getFullYear() || (x.y === _n.getFullYear() && x.m >= _n.getMonth() + 1))) return; }
         const label = (!isNaN(x.y) && !isNaN(x.m)) ? `${monthAbbr[x.m - 1]} '${String(x.y).slice(2)}` : (r.month_label || r.month || r.date || '');
         labels.push(label);
         values.push(total);
@@ -12218,6 +12224,12 @@ async function initSnsExternal() {
         const r = x.row;
         const total = num(r.total_subscriptions ?? r.total_subs ?? r.subscriptions ?? r.active_subscriptions);
         if (total === null || total === 0) { skipped.push(x.y + '-' + x.m); return; }
+        // FIXED 2026-11-06: the Stewardship Summary already has a row for the
+        // current, unfinished month (Nov '26: 20, same as Oct), and the KPI
+        // compared that partial row against October — so Oct's 19 -> 20 gain
+        // showed as 0% MOM. Stop at the last complete month, same as the
+        // chart below does, so the KPI is Oct vs Sep.
+        { const _n = new Date(); if (!isNaN(x.y) && !isNaN(x.m) && (x.y > _n.getFullYear() || (x.y === _n.getFullYear() && x.m >= _n.getMonth() + 1))) return; }
         const label = (!isNaN(x.y) && !isNaN(x.m)) ? `${monthAbbr[x.m - 1]} '${String(x.y).slice(2)}` : (r.month_label || r.month || r.date || '');
         labels.push(label);
         values.push(total);
@@ -21588,6 +21600,15 @@ async function runListingAudit() {
       // Collagen line. Falls back to the old item_type_keyword/SKU logic
       // only when a SKU has no category assignment yet, rather than
       // failing the whole run.
+      // ADDED 2026-10-30 (eraclea): skip SKUs that are no longer on the
+      // Master SKU List at all. ERA0022 (Reveal Advanced Brightening Cream,
+      // deleted) still has rows in Products Cache, so it was being audited
+      // on its own under its Amazon type "facial-moisturizers". Only applies
+      // when the Master SKU List actually loaded.
+      if (Object.keys(skuToCategory).length && !skuToCategory[sku]) {
+        console.log('[listing-audit] skipping ' + sku + ' — not on the Master SKU List (deleted/retired)');
+        continue;
+      }
       let groupKey = skuToCategory[sku] || (row['item_type_keyword'] || '').trim();
       if (!groupKey) {
         // FIXED 2026-09-04 — this fallback chain was évolis's own hair-care
@@ -24787,6 +24808,29 @@ html,body{height:auto!important;margin:0!important;padding:0!important;backgroun
         ).reduce((s, r) => s + (parseInt(r.ad_units, 10) || 0), 0);
       }
 
+      // CHANGED 2026-11-06 per Jaclyn: Amazon ad-driven units now come from
+      // the Advertising sheet's monthly ad_units (SP + SB + SD), the same
+      // source as the Sales page KPI. The Ad Orders sheet above is
+      // per-ASIN and Sponsored Products ONLY (Amazon reports Sponsored
+      // Brands sales by campaign, not by product), so it was 1 short in
+      // Oct '26 (19 vs 20 — the SB sale) and 2 short in Sep (18 vs 20).
+      // Falls back to the Ad Orders sum if the Advertising row is missing.
+      // Organic Units below uses this same total.
+      let advAdUnitsCurr = null, advAdUnitsPrev = null;
+      try {
+        const advCsv = await fetch(ovCsvUrl((window.SHEET_CFG.SHEET_ADVERTISING || {}).fileId, (window.SHEET_CFG.SHEET_ADVERTISING || {}).gid) + `&_cb=${Date.now()}`).then(r => r.ok ? r.text() : '').catch(() => '');
+        if (isCsv(advCsv)) {
+          const advRows = parseCsv(advCsv);
+          const rc = advRows.find(r => parseInt(r.year, 10) === refYear && parseInt(r.month, 10) === refMonth);
+          const rp = advRows.find(r => parseInt(r.year, 10) === lastMonthYear && parseInt(r.month, 10) === lastMonthNum);
+          if (rc && String(rc.ad_units || '').trim() !== '') advAdUnitsCurr = parseInt(rc.ad_units, 10) || 0;
+          if (rp && String(rp.ad_units || '').trim() !== '') advAdUnitsPrev = parseInt(rp.ad_units, 10) || 0;
+        }
+      } catch (e) { console.warn('[eraclea][overview] Advertising sheet ad_units lookup failed:', e.message); }
+      if (advAdUnitsCurr !== null) adDrivenOrders = advAdUnitsCurr;
+      if (advAdUnitsPrev !== null) adDrivenOrdersLastMonthFull = advAdUnitsPrev;
+      console.log('[eraclea][overview] Amazon ad-driven units — Advertising sheet (all ad types):', advAdUnitsCurr, '| prev:', advAdUnitsPrev);
+
       // Walmart — added 2026-08-06 per Jaclyn, explicit choice: sum
       // ad_units from SHEET_WALMART_AD_ORDERS and add it into this same
       // blended figure, same as Amazon's real order count and Website's
@@ -24951,13 +24995,17 @@ html,body{height:auto!important;margin:0!important;padding:0!important;backgroun
       const webShopUnitsByAsinPrev = webShoppingUnitsByAsin(webShoppingRows, prevStartStr, prevEndStr, skuToAsinMap);
       // Website removed from Organic Units 2026-08-25 per Jaclyn — Amazon +
       // Walmart only.
-      const totalAdUnitsCurr = Array.from(allAsins).reduce((s, asin) =>
-        s + Math.min(adUnitsByAsin[asin] || 0, amzUnitsByAsin[asin] || 0)
-          + Math.min(wmtAdUnitsByAsin[asin] || 0, wmtUnitsByAsin[asin] || 0), 0);
+      // Amazon part = Advertising sheet total (all ad types, capped at net
+      // Amazon units) when available — changed 2026-11-06, see above.
+      const amzAdPartCurr = advAdUnitsCurr !== null ? Math.min(advAdUnitsCurr, amzMtdNetUnits)
+        : Array.from(allAsins).reduce((s, asin) => s + Math.min(adUnitsByAsin[asin] || 0, amzUnitsByAsin[asin] || 0), 0);
+      const totalAdUnitsCurr = amzAdPartCurr + Array.from(allAsins).reduce((s, asin) =>
+        s + Math.min(wmtAdUnitsByAsin[asin] || 0, wmtUnitsByAsin[asin] || 0), 0);
       const allAsinsPrev = new Set([...Object.keys(amzPrevUnitsByAsin), ...Object.keys(wmtPrevUnitsByAsin)]);
-      const totalAdUnitsPrev = Array.from(allAsinsPrev).reduce((s, asin) =>
-        s + Math.min(adUnitsByAsinPrev[asin] || 0, amzPrevUnitsByAsin[asin] || 0)
-          + Math.min(wmtAdUnitsByAsinPrev[asin] || 0, wmtPrevUnitsByAsin[asin] || 0), 0);
+      const amzAdPartPrev = advAdUnitsPrev !== null ? Math.min(advAdUnitsPrev, amzPrevNetUnits)
+        : Array.from(allAsinsPrev).reduce((s, asin) => s + Math.min(adUnitsByAsinPrev[asin] || 0, amzPrevUnitsByAsin[asin] || 0), 0);
+      const totalAdUnitsPrev = amzAdPartPrev + Array.from(allAsinsPrev).reduce((s, asin) =>
+        s + Math.min(wmtAdUnitsByAsinPrev[asin] || 0, wmtPrevUnitsByAsin[asin] || 0), 0);
       const organicUnits = Math.max(0, mtd.units - totalAdUnitsCurr);
       const organicUnitsPrev = Math.max(0, prev.units - totalAdUnitsPrev);
       setKpi('ov-kpi-organic-orders', organicUnits.toLocaleString(), pctChange(organicUnits, organicUnitsPrev), momSuffixEst);
@@ -25422,7 +25470,7 @@ html,body{height:auto!important;margin:0!important;padding:0!important;backgroun
           const acosCell = v => v > 0 ? v.toFixed(1) + '%' : '<span class="tp-dash">—</span>';
           const rowsHtml = [
             { label: 'Sponsored Products', d: sp }, { label: 'Sponsored Brands', d: sb }, { label: 'Sponsored Display', d: sd },
-          ].map(r => `<tr><td>${r.label}</td><td>${r.d.campaigns.toLocaleString()}</td><td>${acosCell(r.d.acos)}</td><td>${moneyFmt(r.d.spend)}</td><td>${moneyFmt(r.d.sales)}</td></tr>`).join('');
+          ].map(r => `<tr><td>${r.label}</td><td>${r.d.campaigns.toLocaleString()}</td><td>${acosCell(r.d.acos)}</td><td>${moneyFmt(r.d.spend)}</td><td>${moneyFmt(r.d.sales)}</td><td>${Math.round(r.d.units).toLocaleString()}</td></tr>`).join('');
 
           // Two charts, not one — added 2026-09-12 per Jaclyn: spend share
           // alone only tells half the story (a type could take real spend
@@ -25441,7 +25489,7 @@ html,body{height:auto!important;margin:0!important;padding:0!important;backgroun
               </div>
               <div style="flex:1 1 380px;min-width:320px;overflow-x:auto;">
                 <table class="data-table">
-                  <thead><tr><th>Ad Type</th><th># Campaigns</th><th>ACOS</th><th>Spend</th><th>Sales</th></tr></thead>
+                  <thead><tr><th>Ad Type</th><th># Campaigns</th><th>ACOS</th><th>Spend</th><th>Sales</th><th># Units</th></tr></thead>
                   <tbody>${rowsHtml}</tbody>
                 </table>
               </div>
